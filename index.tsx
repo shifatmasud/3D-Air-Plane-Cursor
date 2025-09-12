@@ -124,14 +124,15 @@ const PaperPlaneApp = () => {
         if (state.isDragging) {
             state.pathPoints.push(state.mousePosition.clone());
             const positions = new Float32Array(state.pathPoints.length * 3);
-            const colors = new Float32Array(state.pathPoints.length * 3);
             state.pathPoints.forEach((p, i) => {
                 p.toArray(positions, i * 3);
-                const t = state.pathPoints.length > 1 ? i / (state.pathPoints.length - 1) : 0;
-                new THREE.Color().copy(startColor).lerp(endColor, t).toArray(colors, i * 3);
             });
             flightPathLine.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-            flightPathLine.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            // Set/resize the color buffer; the animate loop will populate it for the dynamic glow effect.
+            const colorAttribute = flightPathLine.geometry.getAttribute('color');
+            if (!colorAttribute || colorAttribute.count !== state.pathPoints.length) {
+                flightPathLine.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(state.pathPoints.length * 3), 3));
+            }
         }
     };
     
@@ -158,8 +159,38 @@ const PaperPlaneApp = () => {
     window.addEventListener('mouseup', handleInteractionEnd);
     
     // Animation loop
+    const clock = new THREE.Clock(); // Add clock for time-based animations
     const animate = () => {
       requestAnimationFrame(animate);
+      const elapsedTime = clock.getElapsedTime();
+
+      // Dynamic glow for the flight path while dragging
+      if (state.isDragging && state.pathPoints.length > 1) {
+          const colorAttribute = flightPathLine.geometry.getAttribute('color');
+          if (colorAttribute) {
+              const colors = colorAttribute.array;
+              const hueShift = (Math.sin(elapsedTime * 2) + 1) / 2 * 0.1; // Slow hue cycle
+
+              for (let i = 0; i < state.pathPoints.length; i++) {
+                  const t = i / (state.pathPoints.length - 1);
+                  const baseColor = new THREE.Color().copy(startColor).lerp(endColor, t);
+                  // FIX: Initialize hsl with h, s, and l properties to satisfy the HSL type.
+                  const hsl = { h: 0, s: 0, l: 0 };
+                  baseColor.getHSL(hsl);
+
+                  // Create a brightness wave that travels along the path
+                  const lightnessPulse = 0.85 + Math.sin(elapsedTime * 8 - i * 0.5) * 0.15;
+                  
+                  baseColor.setHSL(
+                      (hsl.h + hueShift) % 1.0, 
+                      hsl.s, 
+                      hsl.l * lightnessPulse
+                  );
+                  baseColor.toArray(colors, i * 3);
+              }
+              colorAttribute.needsUpdate = true;
+          }
+      }
 
       if (state.isFlying) {
         state.rawFlightProgress += state.flightSpeed;
