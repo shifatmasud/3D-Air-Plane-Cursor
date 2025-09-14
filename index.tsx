@@ -140,7 +140,6 @@ const PaperPlaneApp = () => {
     camera.position.z = 1000;
 
     const renderer = new THREE.WebGLRenderer({antialias: true, alpha: true});
-    renderer.setClearColor(0x000000, 0);
     renderer.setSize(window.innerWidth, window.innerHeight);
     mountNode.appendChild(renderer.domElement);
 
