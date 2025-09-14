@@ -3,7 +3,7 @@ html {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background-color: #050510; /* Deeper space blue */
+  background-color: #020208; /* Darker space blue for better contrast */
   font-family: 'Inter', 'Arial', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -17,4 +17,21 @@ html {
 canvas {
   display: block;
   cursor: none;
+}
+
+#instructions {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: white;
+  font-size: 2em;
+  text-shadow: 0 0 10px #00aaff;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.5s ease-out;
+}
+
+#instructions.hidden {
+  opacity: 0;
 }
