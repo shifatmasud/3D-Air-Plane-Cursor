@@ -4,9 +4,9 @@
  */
 import React, {useRef, useEffect, useMemo} from 'react';
 import * as THREE from 'three';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { EffectComposer } from 'https://aistudiocdn.com/three@^0.180.0/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'https://aistudiocdn.com/three@^0.180.0/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'https://aistudiocdn.com/three@^0.180.0/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { addPropertyControls, ControlType } from "framer";
 
 
@@ -100,14 +100,23 @@ interface Props {
     maxSpeed: number;
 }
 
-const PaperPlane = ({
+/**
+ * A stunning 3D paper plane animation that follows the cursor,
+ * complete with a starfield background and particle trails.
+ *
+ * @framerSupportedLayoutWidth "fraction"
+ * @framerSupportedLayoutHeight "fraction"
+ */
+export default function PaperPlane(props: Partial<Props>) {
+  const {
     planeScale = 1.8,
     glowColor = "#00ffff",
     trailColor = "#00aaff",
     cursorColor = "#00ffff",
     bloomStrength = 0.8,
     maxSpeed = 800,
-}: Partial<Props>) => {
+  } = props;
+    
   const mountRef = useRef(null);
   const MAX_PARTICLES = 1000;
   
@@ -146,22 +155,31 @@ const PaperPlane = ({
     const mountNode = mountRef.current;
     if (!mountNode) return;
 
+    const initialRect = mountNode.getBoundingClientRect();
+    let width = initialRect.width;
+    let height = initialRect.height;
+    if (width === 0 || height === 0) {
+        width = window.innerWidth;
+        height = window.innerHeight;
+    }
+
     // --- Scene setup ---
     const scene = new THREE.Scene();
     const camera = new THREE.OrthographicCamera(
-      -window.innerWidth / 2, window.innerWidth / 2,
-      window.innerHeight / 2, -window.innerHeight / 2,
+      -width / 2, width / 2,
+      height / 2, -height / 2,
       1, 2000
     );
     camera.position.z = 1000;
 
     const renderer = new THREE.WebGLRenderer({antialias: true, alpha: true});
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     mountNode.appendChild(renderer.domElement);
 
     // --- Post-processing (Bloom) ---
     const renderScene = new RenderPass(scene, camera);
-    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), bloomStrength, 0.4, 0.85);
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(width, height), bloomStrength, 0.4, 0.85);
     const composer = new EffectComposer(renderer);
     composer.addPass(renderScene);
     composer.addPass(bloomPass);
@@ -471,22 +489,32 @@ const PaperPlane = ({
     let particleIndex = 0;
     
     // --- Event Handlers ---
-    const handleResize = () => {
-      camera.left = -window.innerWidth / 2; camera.right = window.innerWidth / 2;
-      camera.top = window.innerHeight / 2; camera.bottom = -window.innerHeight / 2;
+    const handleResize = (newWidth, newHeight) => {
+      width = newWidth;
+      height = newHeight;
+      camera.left = -width / 2; camera.right = width / 2;
+      camera.top = height / 2; camera.bottom = -height / 2;
       camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      composer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setSize(width, height);
+      composer.setSize(width, height);
     };
+
+    const resizeObserver = new ResizeObserver(entries => {
+        if (entries[0]) {
+            const { width: newWidth, height: newHeight } = entries[0].contentRect;
+            handleResize(newWidth, newHeight);
+        }
+    });
+    resizeObserver.observe(mountNode);
 
     const handleMouseMove = (e) => {
       if (!state.hasMoved) state.hasMoved = true;
-      state.mouseTarget.x = e.clientX - window.innerWidth / 2;
-      state.mouseTarget.y = -(e.clientY - window.innerHeight / 2);
+      const rect = mountNode.getBoundingClientRect();
+      state.mouseTarget.x = e.clientX - rect.left - rect.width / 2;
+      state.mouseTarget.y = -(e.clientY - rect.top - rect.height / 2);
     };
     
-    window.addEventListener('resize', handleResize);
-    window.addEventListener('mousemove', handleMouseMove);
+    mountNode.addEventListener('mousemove', handleMouseMove);
 
     // --- Realistic Flight Parameters ---
     const flightParams = {
@@ -499,8 +527,9 @@ const PaperPlane = ({
     };
     
     const clock = new THREE.Clock();
+    let animationFrameId = null;
     const animate = () => {
-      requestAnimationFrame(animate);
+      animationFrameId = requestAnimationFrame(animate);
       const delta = Math.min(clock.getDelta(), 0.1);
       const elapsedTime = clock.getElapsedTime();
       if (delta === 0) return;
@@ -597,15 +626,35 @@ const PaperPlane = ({
     animate();
 
     return () => {
-      window.removeEventListener('resize', handleResize);
-      window.removeEventListener('mousemove', handleMouseMove);
-      if (mountNode) mountNode.removeChild(renderer.domElement);
+      cancelAnimationFrame(animationFrameId);
+      resizeObserver.disconnect();
+      mountNode.removeEventListener('mousemove', handleMouseMove);
+      if (mountNode && renderer.domElement) {
+         mountNode.removeChild(renderer.domElement);
+      }
       renderer.dispose();
-      composer.dispose();
+      // Dispose all scene resources
+      // FIX: Cast object to `any` to access geometry and material properties for disposal.
+      // The base Object3D type does not have them, so this assertion is needed for
+      // TypeScript to compile, while the runtime checks ensure safety. This is
+      // necessary to properly clean up resources for objects like Meshes and Points.
+      scene.traverse(object => {
+          const obj = object as any;
+          if (obj.geometry) {
+              obj.geometry.dispose();
+          }
+          if (obj.material) {
+              if (Array.isArray(obj.material)) {
+                  obj.material.forEach((material: THREE.Material) => material.dispose());
+              } else {
+                  obj.material.dispose();
+              }
+          }
+      });
     };
   }, [planeScale, glowColor, trailColor, cursorColor, bloomStrength, maxSpeed]); // Re-run effect if props change
 
-  return <div ref={mountRef} />;
+  return <div ref={mountRef} style={{ width: '100%', height: '100%', cursor: 'none' }} />;
 };
 
 addPropertyControls(PaperPlane, {
@@ -616,7 +665,6 @@ addPropertyControls(PaperPlane, {
         min: 0.1,
         max: 5,
         step: 0.1,
-        display: "number",
     },
     glowColor: {
         title: "Glow Color",
@@ -640,7 +688,6 @@ addPropertyControls(PaperPlane, {
         min: 0,
         max: 3,
         step: 0.1,
-        display: "number",
     },
     maxSpeed: {
         title: "Max Speed",
@@ -649,8 +696,5 @@ addPropertyControls(PaperPlane, {
         min: 100,
         max: 2000,
         step: 50,
-        display: "number",
     },
 });
-
-export default PaperPlane;
