@@ -91,68 +91,39 @@ const SimplexNoise = (() => {
   };
 })();
 
-// --- Plane Models ---
-const planeModels = [
-    { // Classic Dart
-        vertices: new Float32Array([0,2,-15, -20,-1,10, 20,-1,10, 0,2,15, 0,-2,15, 0,-2,-10]),
-        indices: [0,1,2, 1,3,2, 0,5,1, 1,5,4, 1,4,3, 0,2,5, 2,4,5, 2,3,4]
-    },
-    { // Glider
-        vertices: new Float32Array([0,0,-15, -30,0,5, 30,0,5, 0,0,18, -4,0,15, 4,0,15]),
-        indices: [0,1,2, 1,3,2, 3,4,5, 1,4,3, 2,3,5]
-    },
-    { // Futuristic
-        vertices: new Float32Array([0,1,-18, -15,-2,20, 15,-2,20, 0,4,15, -2,-4,18, 2,-4,18]),
-        indices: [0,1,2, 1,3,2, 1,4,3, 2,3,5, 4,5,3]
-    }
-];
-
 const PaperPlaneApp = () => {
   const mountRef = useRef(null);
-  const MAX_TRAIL_PARTICLES = 500;
-  const MAX_EXPLOSION_PARTICLES = 300;
+  const MAX_PARTICLES = 500;
   
   const { 
-    _vec3, _flowFieldForce, _tailOffset, _worldTailPosition,
-    _camLookAt, _desiredCamPos, _currentCamLookAt,
-    _yawQuat, _pitchQuat, _finalQuat, _planeUp, _euler,
-    _planeDirection, _updateParticlesVec, _relativePosVec, _newParticlePos
+    _vec3, _mat4, _lookAt, _flowFieldForce,
+    _bankQuat, _targetQuat, _tailOffset, _worldTailPosition,
+    _normalizedVelocity, _steeringForce, _desiredVelocity
   } = useMemo(() => ({
       _vec3: new THREE.Vector3(),
+      _mat4: new THREE.Matrix4(),
+      _lookAt: new THREE.Vector3(),
       _flowFieldForce: new THREE.Vector3(),
+      _bankQuat: new THREE.Quaternion(),
+      _targetQuat: new THREE.Quaternion(),
       _tailOffset: new THREE.Vector3(0, 0, 15),
       _worldTailPosition: new THREE.Vector3(),
-      _camLookAt: new THREE.Vector3(),
-      _desiredCamPos: new THREE.Vector3(),
-      _currentCamLookAt: new THREE.Vector3(),
-      _yawQuat: new THREE.Quaternion(),
-      _pitchQuat: new THREE.Quaternion(),
-      _finalQuat: new THREE.Quaternion(),
-      _planeUp: new THREE.Vector3(0, 1, 0),
-      _euler: new THREE.Euler(),
-      _planeDirection: new THREE.Vector3(),
-      _updateParticlesVec: new THREE.Vector3(),
-      _relativePosVec: new THREE.Vector3(),
-      _newParticlePos: new THREE.Vector3(),
+      _normalizedVelocity: new THREE.Vector3(),
+      _steeringForce: new THREE.Vector3(),
+      _desiredVelocity: new THREE.Vector3(),
   }), []);
 
   const state = useRef({
-    mouse: new THREE.Vector2(),
+    mouseTarget: new THREE.Vector3(),
     plane: {
-        position: new THREE.Vector3(0,0,0),
+        position: new THREE.Vector3(),
         velocity: new THREE.Vector3(),
-        rollVelocity: 0,
-        currentBank: 0,
+        acceleration: new THREE.Vector3(),
     },
     trailParticles: [],
-    explosionParticles: [],
-    orbs: [],
     noise: new SimplexNoise(),
     lastEmitTime: 0,
     hasMoved: false,
-    isBoosting: false,
-    isStarted: false,
-    currentPlaneModel: 0,
   }).current;
 
   useEffect(() => {
@@ -161,7 +132,12 @@ const PaperPlaneApp = () => {
 
     // --- Scene setup ---
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 10000);
+    const camera = new THREE.OrthographicCamera(
+      -window.innerWidth / 2, window.innerWidth / 2,
+      window.innerHeight / 2, -window.innerHeight / 2,
+      1, 2000
+    );
+    camera.position.z = 1000;
 
     const renderer = new THREE.WebGLRenderer({antialias: true, alpha: true});
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -169,7 +145,7 @@ const PaperPlaneApp = () => {
 
     // --- Post-processing (Bloom) ---
     const renderScene = new RenderPass(scene, camera);
-    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.7, 0.4, 0.85);
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.8, 0.4, 0.85);
     const composer = new EffectComposer(renderer);
     composer.addPass(renderScene);
     composer.addPass(bloomPass);
@@ -180,38 +156,62 @@ const PaperPlaneApp = () => {
     dirLight.position.set(500, 500, 1000);
     scene.add(dirLight);
 
-    // --- Infinite Starfield ---
-    const STAR_COUNT = 5000;
+    // --- Cinematic Starfield ---
+    const STAR_COUNT = 10000;
     const starGeometry = new THREE.BufferGeometry();
-    const starPositions = new Float32Array(STAR_COUNT * 3);
-    const starColors = new Float32Array(STAR_COUNT * 3);
-    const starRandoms = new Float32Array(STAR_COUNT);
+    const positions = new Float32Array(STAR_COUNT * 3);
+    const colors = new Float32Array(STAR_COUNT * 3);
+    const randoms = new Float32Array(STAR_COUNT);
+
     const starColor = new THREE.Color();
-    const starRadius = 4000;
+    const radius = 2000; // Pushed further out
+
     for (let i = 0; i < STAR_COUNT; i++) {
-        const r = Math.random() * starRadius + 100;
-        const theta = Math.random() * 2 * Math.PI;
-        const phi = Math.acos(2 * Math.random() - 1);
-        starPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-        starPositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-        starPositions[i * 3 + 2] = r * Math.cos(phi);
-        starColor.setHSL(0.55 + Math.random() * 0.1, 0.1, 0.9 + Math.random() * 0.1);
-        starColors[i * 3] = starColor.r;
-        starColors[i * 3 + 1] = starColor.g;
-        starColors[i * 3 + 2] = starColor.b;
-        starRandoms[i] = Math.random() * 10.0;
+        const u = Math.random(), v = Math.random();
+        const theta = 2 * Math.PI * u, phi = Math.acos(2 * v - 1);
+        const r = radius * Math.cbrt(Math.random());
+        positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+        positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+        positions[i * 3 + 2] = r * Math.cos(phi) - 1500; // Pushed further back
+
+        starColor.setHSL(0.55 + Math.random() * 0.1, 0.1, 0.9 + Math.random() * 0.1); // Whitish
+        colors[i * 3] = starColor.r;
+        colors[i * 3 + 1] = starColor.g;
+        colors[i * 3 + 2] = starColor.b;
+
+        randoms[i] = Math.random() * 10.0;
     }
-    starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3).setUsage(THREE.DynamicDrawUsage));
-    starGeometry.setAttribute('color', new THREE.BufferAttribute(starColors, 3));
-    starGeometry.setAttribute('random', new THREE.BufferAttribute(starRandoms, 1));
+
+    starGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    starGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    starGeometry.setAttribute('random', new THREE.BufferAttribute(randoms, 1));
 
     const starMaterial = new THREE.ShaderMaterial({
-        uniforms: { time: { value: 0.0 }, size: { value: 4.0 } },
+        uniforms: {
+            time: { value: 0.0 },
+            size: { value: 8.0 } // Smaller base size
+        },
         vertexShader: `
-            uniform float time; uniform float size; attribute float random; attribute vec3 color; varying vec3 vColor;
+            uniform float time;
+            uniform float size;
+            attribute float random;
+            attribute vec3 color;
+            varying vec3 vColor;
             void main() {
                 vColor = color;
-                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                vec3 displacedPosition = position;
+                
+                // Fluid, non-linear motion
+                float freq = 0.0005;
+                float speed = 0.05;
+                float amplitude = 40.0;
+                displacedPosition.x += sin(position.y * freq + time * speed) * amplitude;
+                displacedPosition.y += cos(position.z * freq + time * speed) * amplitude;
+                displacedPosition.z += sin(position.x * freq + time * speed) * amplitude;
+
+                vec4 mvPosition = modelViewMatrix * vec4(displacedPosition, 1.0);
+                
+                // Slower, more subtle twinkle
                 float twinkle = 0.5 * (1.0 + sin(time * (0.1 + random * 0.2) + random * 6.0));
                 gl_PointSize = size * twinkle * (1500.0 / -mvPosition.z);
                 gl_Position = projectionMatrix * mvPosition;
@@ -226,39 +226,69 @@ const PaperPlaneApp = () => {
                 gl_FragColor = vec4(vColor, pow(strength, 2.0));
             }
         `,
-        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        transparent: true,
     });
     const stars = new THREE.Points(starGeometry, starMaterial);
     scene.add(stars);
 
-    // --- Infinite Background Dust ---
-    const DUST_COUNT = 20000;
+    // --- Subtle Background Dust ---
+    const DUST_COUNT = 50000;
     const dustGeometry = new THREE.BufferGeometry();
     const dustPositions = new Float32Array(DUST_COUNT * 3);
     const dustColors = new Float32Array(DUST_COUNT * 3);
-    const dustRadius = 6000;
+    const dustRandoms = new Float32Array(DUST_COUNT);
+    const dustRadius = 3000; // Pushed even further out
+
     for (let i = 0; i < DUST_COUNT; i++) {
-        const r = Math.random() * dustRadius + 500;
-        const theta = Math.random() * 2 * Math.PI;
-        const phi = Math.acos(2 * Math.random() - 1);
+        const u = Math.random(), v = Math.random();
+        const theta = 2 * Math.PI * u, phi = Math.acos(2 * v - 1);
+        const r = dustRadius * Math.cbrt(Math.random());
         dustPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
         dustPositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-        dustPositions[i * 3 + 2] = r * Math.cos(phi);
-        starColor.setHSL(0.6, 0.1, 0.6 + Math.random() * 0.2);
+        dustPositions[i * 3 + 2] = r * Math.cos(phi) - 2500; // Pushed even further back
+
+        starColor.setHSL(0.6, 0.1, 0.6 + Math.random() * 0.2); // Whitish, dimmer dust
         dustColors[i * 3] = starColor.r;
         dustColors[i * 3 + 1] = starColor.g;
         dustColors[i * 3 + 2] = starColor.b;
+
+        dustRandoms[i] = Math.random() * 5.0;
     }
-    dustGeometry.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3).setUsage(THREE.DynamicDrawUsage));
+
+    dustGeometry.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3));
     dustGeometry.setAttribute('color', new THREE.BufferAttribute(dustColors, 3));
+    dustGeometry.setAttribute('random', new THREE.BufferAttribute(dustRandoms, 1));
+
     const dustMaterial = new THREE.ShaderMaterial({
-        uniforms: { size: { value: 1.0 } },
+        uniforms: {
+            time: { value: 0.0 },
+            size: { value: 1.5 } // Even smaller
+        },
         vertexShader: `
-            uniform float size; attribute vec3 color; varying vec3 vColor;
+            uniform float time;
+            uniform float size;
+            attribute float random;
+            attribute vec3 color;
+            varying vec3 vColor;
             void main() {
                 vColor = color;
-                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-                gl_PointSize = size * (2000.0 / -mvPosition.z);
+                vec3 displacedPosition = position;
+
+                // Slower, different fluid motion for depth
+                float freq = 0.0002;
+                float speed = 0.02;
+                float amplitude = 30.0;
+                displacedPosition.x += cos(position.y * freq + time * speed) * amplitude;
+                displacedPosition.y += sin(position.z * freq + time * speed) * amplitude;
+                displacedPosition.z += cos(position.x * freq + time * speed) * amplitude;
+
+                vec4 mvPosition = modelViewMatrix * vec4(displacedPosition, 1.0);
+
+                // Slower, more subtle twinkle
+                float twinkle = 0.5 * (1.0 + sin(time * 0.05 + random * 5.0));
+                gl_PointSize = size * twinkle * (2000.0 / -mvPosition.z);
                 gl_Position = projectionMatrix * mvPosition;
             }
         `,
@@ -270,23 +300,88 @@ const PaperPlaneApp = () => {
                 gl_FragColor = vec4(vColor, 1.0 - dist);
             }
         `,
-        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        transparent: true,
     });
     const dust = new THREE.Points(dustGeometry, dustMaterial);
     scene.add(dust);
+    
+    // --- Soft Particle Cursor ---
+    const CURSOR_PARTICLES = 50;
+    const cursorGeometry = new THREE.BufferGeometry();
+    const cursorPositions = new Float32Array(CURSOR_PARTICLES * 3);
+    const cursorRandoms = new Float32Array(CURSOR_PARTICLES * 3); // x:speed, y:radius, z:offset
 
+    for (let i = 0; i < CURSOR_PARTICLES; i++) {
+        cursorPositions[i * 3] = cursorPositions[i * 3 + 1] = cursorPositions[i * 3 + 2] = 0;
+        cursorRandoms[i * 3] = Math.random() * 0.8 + 0.2; // Random speed
+        cursorRandoms[i * 3 + 1] = Math.random() * 10 + 8;  // Random radius
+        cursorRandoms[i * 3 + 2] = Math.random() * Math.PI * 2; // Random phase offset
+    }
+    cursorGeometry.setAttribute('position', new THREE.BufferAttribute(cursorPositions, 3));
+    cursorGeometry.setAttribute('random', new THREE.BufferAttribute(cursorRandoms, 3));
+
+    const cursorMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            time: { value: 0.0 },
+            color: { value: new THREE.Color(0x00ffff) },
+        },
+        vertexShader: `
+            uniform float time;
+            attribute vec3 random;
+            varying float vOpacity;
+            void main() {
+                float speed = random.x;
+                float radius = random.y;
+                float offset = random.z;
+                
+                vec3 pos = position;
+                pos.x += cos(time * speed + offset) * radius;
+                pos.y += sin(time * speed + offset) * radius;
+
+                vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                
+                float pulse = 0.5 * (1.0 + sin(time * 2.0 + offset));
+                gl_PointSize = (8.0 + pulse * 4.0) * (300.0 / -mvPosition.z);
+                
+                vOpacity = 1.0 - (radius / 18.0);
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `,
+        fragmentShader: `
+            uniform vec3 color;
+            varying float vOpacity;
+            void main() {
+                float dist = distance(gl_PointCoord, vec2(0.5, 0.5));
+                if (dist > 0.5) { discard; }
+                float strength = 1.0 - dist * 2.0;
+                gl_FragColor = vec4(color, pow(strength, 2.0) * vOpacity * 0.7);
+            }
+        `,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        transparent: true,
+    });
+    const cursorTarget = new THREE.Points(cursorGeometry, cursorMaterial);
+    scene.add(cursorTarget);
 
     // --- Paper Plane Model with Fresnel Shader ---
     const planeGeometry = new THREE.BufferGeometry();
-    const initialModel = planeModels[state.currentPlaneModel];
-    planeGeometry.setIndex(initialModel.indices);
-    planeGeometry.setAttribute('position', new THREE.BufferAttribute(initialModel.vertices, 3));
+    const vertices = new Float32Array([0,2,-15, -20,-1,10, 20,-1,10, 0,2,15, 0,-2,15, 0,-2,-10]);
+    const indices = [0,1,2, 1,3,2, 0,5,1, 1,5,4, 1,4,3, 0,2,5, 2,4,5, 2,3,4];
+    planeGeometry.setIndex(indices);
+    planeGeometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
     planeGeometry.computeVertexNormals();
     
     const planeMaterial = new THREE.ShaderMaterial({
-      uniforms: { time: { value: 1.0 }, glowColor: { value: new THREE.Color(0x00ffff) } },
+      uniforms: {
+        time: { value: 1.0 },
+        glowColor: { value: new THREE.Color(0x00ffff) }
+      },
       vertexShader: `
-        varying vec3 vNormal; varying vec3 vPosition;
+        varying vec3 vNormal;
+        varying vec3 vPosition;
         void main() {
           vNormal = normalize(normalMatrix * normal);
           vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
@@ -294,7 +389,10 @@ const PaperPlaneApp = () => {
         }
       `,
       fragmentShader: `
-        uniform float time; uniform vec3 glowColor; varying vec3 vNormal; varying vec3 vPosition;
+        uniform float time;
+        uniform vec3 glowColor;
+        varying vec3 vNormal;
+        varying vec3 vPosition;
         void main() {
           float intensity = pow(0.7 - dot(vNormal, normalize(-vPosition)), 2.0);
           intensity += (sin(time * 2.0) * 0.5 + 0.5) * 0.1; // Pulsing
@@ -311,188 +409,80 @@ const PaperPlaneApp = () => {
     planeGroup.scale.set(1.8, 1.8, 1.8);
     scene.add(planeGroup);
 
-    // --- Particle Trail System ---
-    const trailParticleGeometry = new THREE.BufferGeometry();
-    const trailParticlePositions = new Float32Array(MAX_TRAIL_PARTICLES * 3);
-    const trailParticleAlphas = new Float32Array(MAX_TRAIL_PARTICLES);
-    trailParticleGeometry.setAttribute('position', new THREE.BufferAttribute(trailParticlePositions, 3).setUsage(THREE.DynamicDrawUsage));
-    trailParticleGeometry.setAttribute('alpha', new THREE.BufferAttribute(trailParticleAlphas, 1).setUsage(THREE.DynamicDrawUsage));
-    const trailParticleMaterial = new THREE.ShaderMaterial({
-      uniforms: { color: { value: new THREE.Color(0x00aaff) }, },
+    // --- Particle Trail System with Custom Shader ---
+    const particleGeometry = new THREE.BufferGeometry();
+    const particlePositions = new Float32Array(MAX_PARTICLES * 3);
+    const particleAlphas = new Float32Array(MAX_PARTICLES);
+    particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3).setUsage(THREE.DynamicDrawUsage));
+    particleGeometry.setAttribute('alpha', new THREE.BufferAttribute(particleAlphas, 1).setUsage(THREE.DynamicDrawUsage));
+    
+    const particleMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        color: { value: new THREE.Color(0x00aaff) },
+      },
       vertexShader: `
-        attribute float alpha; varying float vAlpha;
-        void main() { vAlpha = alpha; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); gl_PointSize = (10.0 * alpha) + 2.0; }`,
+        attribute float alpha;
+        varying float vAlpha;
+        void main() {
+          vAlpha = alpha;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = (10.0 * alpha) + 2.0;
+        }
+      `,
       fragmentShader: `
-        uniform vec3 color; varying float vAlpha;
-        void main() { float r = distance(gl_PointCoord, vec2(0.5, 0.5)); if (r > 0.5) { discard; } gl_FragColor = vec4(color, vAlpha * (1.0 - r * 2.0)); }`,
-      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+        uniform vec3 color;
+        varying float vAlpha;
+        void main() {
+          float r = distance(gl_PointCoord, vec2(0.5, 0.5));
+          if (r > 0.5) { discard; }
+          gl_FragColor = vec4(color, vAlpha * (1.0 - r * 2.0));
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
     });
-    const trailParticleSystem = new THREE.Points(trailParticleGeometry, trailParticleMaterial);
-    scene.add(trailParticleSystem);
-    for (let i = 0; i < MAX_TRAIL_PARTICLES; i++) {
+
+    const particleSystem = new THREE.Points(particleGeometry, particleMaterial);
+    scene.add(particleSystem);
+
+    for (let i = 0; i < MAX_PARTICLES; i++) {
         state.trailParticles.push({
             position: new THREE.Vector3(), velocity: new THREE.Vector3(),
             life: 0, maxLife: Math.random() * 2.0 + 1.5,
         });
     }
-    let trailParticleIndex = 0;
-    
-    // --- Orb Explosion Particle System ---
-    const explosionParticleGeometry = new THREE.BufferGeometry();
-    const explosionPositions = new Float32Array(MAX_EXPLOSION_PARTICLES * 3);
-    const explosionAlphas = new Float32Array(MAX_EXPLOSION_PARTICLES);
-    explosionParticleGeometry.setAttribute('position', new THREE.BufferAttribute(explosionPositions, 3).setUsage(THREE.DynamicDrawUsage));
-    explosionParticleGeometry.setAttribute('alpha', new THREE.BufferAttribute(explosionAlphas, 1).setUsage(THREE.DynamicDrawUsage));
-    const explosionMaterial = new THREE.ShaderMaterial({
-        uniforms: { color: { value: new THREE.Color(0xffd700) } },
-        vertexShader: `
-          attribute float alpha; varying float vAlpha;
-          void main() { vAlpha = alpha; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mvPosition; gl_PointSize = (20.0 * alpha) * (300.0 / -mvPosition.z); }`,
-        fragmentShader: `
-          uniform vec3 color; varying float vAlpha;
-          void main() { float r = distance(gl_PointCoord, vec2(0.5, 0.5)); if (r > 0.5) { discard; } gl_FragColor = vec4(color, vAlpha * (1.0 - r * 2.0)); }`,
-        transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
-    });
-    const explosionSystem = new THREE.Points(explosionParticleGeometry, explosionMaterial);
-    scene.add(explosionSystem);
-    for (let i = 0; i < MAX_EXPLOSION_PARTICLES; i++) {
-        state.explosionParticles.push({
-            position: new THREE.Vector3(), velocity: new THREE.Vector3(),
-            life: 0, maxLife: Math.random() * 0.8 + 0.4,
-        });
-    }
-    let explosionParticleIndex = 0;
-
-    const triggerExplosion = (position) => {
-        const numParticlesToEmit = 50;
-        for (let i = 0; i < numParticlesToEmit; i++) {
-            const p = state.explosionParticles[explosionParticleIndex];
-            p.position.copy(position);
-            p.velocity.set( (Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5) ).normalize().multiplyScalar(Math.random() * 150 + 50);
-            p.life = p.maxLife;
-            explosionParticleIndex = (explosionParticleIndex + 1) % MAX_EXPLOSION_PARTICLES;
-        }
-    };
-
-    // --- Energy Orbs (Purple & Gold) ---
-    const ORB_COUNT = 50;
-    const orbGeometry = new THREE.SphereGeometry(15, 16, 16);
-    const orbMaterial = new THREE.ShaderMaterial({
-      uniforms: {
-        time: { value: 0.0 },
-        glowColor: { value: new THREE.Color(0xFFD700) }, // Gold
-        purpleColor: { value: new THREE.Color(0x9400D3) }, // Purple
-      },
-      vertexShader: `
-        varying vec3 vNormal;
-        void main() { vNormal = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-      fragmentShader: `
-        uniform float time; uniform vec3 glowColor; uniform vec3 purpleColor; varying vec3 vNormal;
-        void main() {
-          float pulse = 0.5 * (1.0 + sin(time * 2.0));
-          float intensity = pow(0.8 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 2.0);
-          vec3 mixedGlow = mix(purpleColor, glowColor, pow(intensity, 1.5));
-          gl_FragColor = vec4(mixedGlow, (intensity + pulse * 0.5) * 0.8);
-        }
-      `,
-      blending: THREE.AdditiveBlending, transparent: true, depthWrite: false,
-    });
-    for (let i = 0; i < ORB_COUNT; i++) {
-      const orbMesh = new THREE.Mesh(orbGeometry, orbMaterial.clone());
-      orbMesh.position.set( (Math.random() - 0.5) * 8000, (Math.random() - 0.5) * 8000, (Math.random() - 0.5) * 8000 - 1000);
-      scene.add(orbMesh);
-      state.orbs.push(orbMesh);
-    }
+    let particleIndex = 0;
     
     // --- Event Handlers ---
     const handleResize = () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.left = -window.innerWidth / 2; camera.right = window.innerWidth / 2;
+      camera.top = window.innerHeight / 2; camera.bottom = -window.innerHeight / 2;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
       composer.setSize(window.innerWidth, window.innerHeight);
     };
+
     const handleMouseMove = (e) => {
       if (!state.hasMoved) state.hasMoved = true;
-      state.mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-      state.mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+      state.mouseTarget.x = e.clientX - window.innerWidth / 2;
+      state.mouseTarget.y = -(e.clientY - window.innerHeight / 2);
     };
-    const handleMouseDown = () => {
-      if (!state.isStarted) {
-        state.isStarted = true;
-        const instructions = document.getElementById('instructions');
-        if (instructions) {
-          instructions.classList.add('hidden');
-        }
-      }
-      state.isBoosting = true;
-    };
-    const handleMouseUp = () => { state.isBoosting = false; };
-    const handleKeyDown = (e) => {
-        if (e.key.toLowerCase() === 'c') {
-            state.currentPlaneModel = (state.currentPlaneModel + 1) % planeModels.length;
-            const newModel = planeModels[state.currentPlaneModel];
-            planeMesh.geometry.setIndex(newModel.indices);
-            planeMesh.geometry.setAttribute('position', new THREE.BufferAttribute(newModel.vertices, 3));
-            planeMesh.geometry.computeVertexNormals();
-            planeMesh.geometry.index.needsUpdate = true;
-            planeMesh.geometry.attributes.position.needsUpdate = true;
-            planeMesh.geometry.attributes.normal.needsUpdate = true;
-        }
-    };
+    
     window.addEventListener('resize', handleResize);
     window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mousedown', handleMouseDown);
-    window.addEventListener('mouseup', handleMouseUp);
-    window.addEventListener('keydown', handleKeyDown);
 
+    // --- Realistic Flight Parameters ---
     const flightParams = {
-        baseSpeed: 300,
-        boostMultiplier: 2.5,
-        turnSpeed: 1.5,
-        bankFactor: 1.2,
-        rollSpring: 2.5, // How quickly it tries to bank
-        rollDamping: 0.5, // How much it resists banking
+        bankFactor: 0.001,
+        maxBank: Math.PI / 4,
+        maxSpeed: 800,
+        maxForce: 25, // Steering force
+        damping: 0.98, // Fluid resistance
+        slowingRadius: 300, // Distance at which to start slowing down
     };
     
     const clock = new THREE.Clock();
-    const cameraOffset = new THREE.Vector3(0, 50, 200);
-
-    const updateInfiniteParticles = (particleSystem, radius) => {
-        const positions = particleSystem.geometry.attributes.position;
-        const center = planeGroup.position;
-        
-        // This vector points out the TAIL of the plane
-        _planeDirection.set(0, 0, 1).applyQuaternion(planeGroup.quaternion);
-
-        for (let i = 0; i < positions.count; i++) {
-            _updateParticlesVec.fromBufferAttribute(positions, i);
-            _relativePosVec.copy(_updateParticlesVec).sub(center);
-
-            // Check if the particle is behind the plane
-            if (_relativePosVec.dot(_planeDirection) > 100) { // A small threshold to avoid flicker
-                // It's behind, so "summon" it again in front by giving it a new position
-                
-                // Create a random offset vector
-                _newParticlePos
-                    .set(
-                        (Math.random() - 0.5),
-                        (Math.random() - 0.5),
-                        (Math.random() - 0.5)
-                    )
-                    .normalize()
-                    .multiplyScalar(Math.random() * radius); // within a sphere of 'radius'
-
-                // Add this offset to a point far in front of the plane
-                _newParticlePos
-                    .add(center) // start from plane's center
-                    .addScaledVector(_planeDirection, -radius * 1.5); // move far in front
-                
-                positions.setXYZ(i, _newParticlePos.x, _newParticlePos.y, _newParticlePos.z);
-            }
-        }
-        positions.needsUpdate = true;
-    };
-
     const animate = () => {
       requestAnimationFrame(animate);
       const delta = Math.min(clock.getDelta(), 0.1);
@@ -500,146 +490,90 @@ const PaperPlaneApp = () => {
       if (delta === 0) return;
 
       const { plane } = state;
-      let currentSpeed = 0;
       
-      if (state.isStarted) {
-          currentSpeed = (state.isBoosting ? flightParams.baseSpeed * flightParams.boostMultiplier : flightParams.baseSpeed);
-          
-          // --- Fluid Reactive Motion System ---
-          const targetYaw = -state.mouse.x * flightParams.turnSpeed * delta;
-          const targetPitch = state.mouse.y * flightParams.turnSpeed * delta;
-          
-          _yawQuat.setFromAxisAngle({x:0, y:1, z:0}, targetYaw);
-          _pitchQuat.setFromAxisAngle({x:1, y:0, z:0}, targetPitch);
-          
-          _finalQuat.copy(planeGroup.quaternion).multiply(_yawQuat).multiply(_pitchQuat);
-          planeGroup.quaternion.slerp(_finalQuat, 1 - Math.pow(0.05, delta));
-
-          // Physics-based banking/roll
-          const targetBank = -state.mouse.x * flightParams.bankFactor;
-          const bankError = targetBank - plane.currentBank;
-          const rollForce = bankError * flightParams.rollSpring;
-          const dampingForce = -plane.rollVelocity * flightParams.rollDamping;
-          plane.rollVelocity += (rollForce + dampingForce) * delta;
-          plane.currentBank += plane.rollVelocity * delta;
-
-          // Add wobble/reactive motion
-          const turnRate = Math.abs(state.mouse.x);
-          const wobbleFreq = elapsedTime * (state.isBoosting ? 20 : 10);
-          const wobbleAmount = turnRate * 0.05 * Math.sin(wobbleFreq);
-
-          // Apply bank and wobble to the plane's up vector
-          _euler.setFromQuaternion(planeGroup.quaternion, 'YXZ');
-          _euler.z = plane.currentBank + wobbleAmount;
-          planeGroup.quaternion.setFromEuler(_euler);
-          
-          // Update position
-          plane.velocity.set(0, 0, -1).applyQuaternion(planeGroup.quaternion).multiplyScalar(currentSpeed * delta);
-          plane.position.add(plane.velocity);
+      // --- Physics: Steering Behavior (Arrival) ---
+      _desiredVelocity.subVectors(state.mouseTarget, plane.position);
+      const distance = _desiredVelocity.length();
+      let desiredSpeed = flightParams.maxSpeed;
+      if (distance < flightParams.slowingRadius) {
+          desiredSpeed = flightParams.maxSpeed * (distance / flightParams.slowingRadius);
       }
+      _desiredVelocity.normalize().multiplyScalar(desiredSpeed * delta);
+      _steeringForce.subVectors(_desiredVelocity, plane.velocity);
+      _steeringForce.clampLength(0, flightParams.maxForce * delta);
+      plane.acceleration.add(_steeringForce);
+      plane.velocity.add(plane.acceleration);
+      plane.velocity.multiplyScalar(flightParams.damping);
+      plane.position.add(plane.velocity);
+      plane.acceleration.multiplyScalar(0);
+
+      // --- Update Meshes ---
       planeGroup.position.copy(plane.position);
-
-      // --- Stable Lerp Camera ---
-      _desiredCamPos.copy(cameraOffset).applyQuaternion(planeGroup.quaternion).add(plane.position);
-      camera.position.lerp(_desiredCamPos, 1 - Math.pow(0.02, delta));
+      cursorTarget.position.lerp(state.mouseTarget, 0.2);
       
-      _camLookAt.copy(plane.position).add(plane.velocity.clone().multiplyScalar(0.2));
-      _currentCamLookAt.lerp(_camLookAt, 1 - Math.pow(0.01, delta));
-      camera.lookAt(_currentCamLookAt);
-      
-      // Dynamic FOV
-      const speedRatio = (currentSpeed / (flightParams.baseSpeed * flightParams.boostMultiplier));
-      const boostFov = state.isBoosting ? 20 : 0;
-      camera.fov = 75 + speedRatio * 15 + boostFov;
-      camera.updateProjectionMatrix();
-
-      // Subtle Camera Shake (Turbulence)
-      const shakeIntensity = speedRatio * (state.isBoosting ? 0.3 : 0.15);
-      camera.position.x += state.noise.noise3D(elapsedTime * 2, 0, 0) * shakeIntensity;
-      camera.position.y += state.noise.noise3D(0, elapsedTime * 2, 0) * shakeIntensity;
-
-      // --- Animate Shaders ---
-      starMaterial.uniforms.time.value = elapsedTime;
-      planeMaterial.uniforms.time.value = elapsedTime;
-      state.orbs.forEach(orb => orb.material.uniforms.time.value = elapsedTime);
-      trailParticleMaterial.uniforms.color.value.set(state.isBoosting ? 0x88ffff : 0x00aaff);
-
-      // --- Infinite Starfield Logic ---
-      updateInfiniteParticles(stars, starRadius);
-      updateInfiniteParticles(dust, dustRadius);
-
-      // --- Orb collision ---
-      const collisionThreshold = 40; 
-      for (const orb of state.orbs) {
-        if (orb.visible && plane.position.distanceTo(orb.position) < collisionThreshold) {
-          orb.visible = false;
-          triggerExplosion(orb.position);
-          setTimeout(() => {
-              const respawnDist = 4000;
-              const respawnDir = plane.velocity.clone().normalize();
-              orb.position.copy(plane.position)
-                .add(respawnDir.multiplyScalar(respawnDist))
-                .add(new THREE.Vector3(
-                    (Math.random() - 0.5) * 2000,
-                    (Math.random() - 0.5) * 2000,
-                    (Math.random() - 0.5) * 2000
-                ));
-              orb.visible = true;
-          }, 1000); 
-        }
+      if (plane.velocity.lengthSq() > 0.01) {
+          _lookAt.addVectors(plane.position, plane.velocity);
+          _mat4.lookAt(plane.position, _lookAt, planeGroup.up);
+          _targetQuat.setFromRotationMatrix(_mat4);
+          const sideVector = _flowFieldForce.copy(plane.velocity).normalize().cross(planeGroup.up);
+          const lateralForce = _steeringForce.dot(sideVector);
+          const targetBankAngle = THREE.MathUtils.clamp(-lateralForce * flightParams.bankFactor, -flightParams.maxBank, flightParams.maxBank);
+          _normalizedVelocity.copy(plane.velocity).normalize();
+          _bankQuat.setFromAxisAngle(_normalizedVelocity, targetBankAngle);
+          _targetQuat.multiply(_bankQuat);
+          planeGroup.quaternion.slerp(_targetQuat, 1 - Math.pow(0.01, delta));
       }
+      
+      // --- Animate Background & Shaders ---
+      starMaterial.uniforms.time.value = elapsedTime;
+      dustMaterial.uniforms.time.value = elapsedTime;
+      cursorMaterial.uniforms.time.value = elapsedTime;
+      planeMaterial.uniforms.time.value = elapsedTime;
 
-      // --- Trail Particle Emission ---
-      const emitInterval = state.isBoosting ? 1 / 150 : 1 / (Math.min(currentSpeed / 20, 50) + 10);
-      if (state.hasMoved && currentSpeed > 10 && elapsedTime - state.lastEmitTime > emitInterval) {
+      // Reduced parallax effect for more distance
+      stars.position.x = -plane.position.x * 0.01;
+      stars.position.y = -plane.position.y * 0.01;
+      dust.position.x = -plane.position.x * 0.0025;
+      dust.position.y = -plane.position.y * 0.0025;
+
+      // --- Particle Emission ---
+      const speed = plane.velocity.length() / delta;
+      const emitInterval = 1 / (Math.min(speed / 20, 50) + 10);
+      
+      if (state.hasMoved && speed > 10 && elapsedTime - state.lastEmitTime > emitInterval) {
           state.lastEmitTime = elapsedTime;
-          const p = state.trailParticles[trailParticleIndex];
+          const p = state.trailParticles[particleIndex];
           _worldTailPosition.copy(_tailOffset).applyMatrix4(planeGroup.matrixWorld);
           p.position.copy(_worldTailPosition);
-          p.velocity.copy(plane.velocity).multiplyScalar(-0.2);
+          p.velocity.copy(plane.velocity).multiplyScalar(-0.1 / delta);
           p.life = p.maxLife;
-          trailParticleIndex = (trailParticleIndex + 1) % MAX_TRAIL_PARTICLES;
+          particleIndex = (particleIndex + 1) % MAX_PARTICLES;
       }
       
-      // --- Trail Particle Physics & Updates ---
-      const trailPosAttr = trailParticleGeometry.getAttribute('position');
-      const trailAlphaAttr = trailParticleGeometry.getAttribute('alpha');
+      // --- Particle Physics & Updates ---
+      const posAttr = particleGeometry.getAttribute('position');
+      const alphaAttr = particleGeometry.getAttribute('alpha');
       const noiseScale = 0.02, noiseTime = elapsedTime * 0.8, noiseStrength = 350;
-      for (let i = 0; i < MAX_TRAIL_PARTICLES; i++) {
+      
+      for (let i = 0; i < MAX_PARTICLES; i++) {
         const p = state.trailParticles[i];
         if (p.life > 0) {
           p.life -= delta;
           const t = Math.max(0, p.life / p.maxLife);
-          trailAlphaAttr.setX(i, Math.pow(t, 2));
-          const nx = state.noise.noise3D(p.position.x*noiseScale, p.position.y*noiseScale, noiseTime);
-          const ny = state.noise.noise3D(p.position.y*noiseScale, p.position.z*noiseScale, noiseTime+100);
-          const nz = state.noise.noise3D(p.position.z*noiseScale, p.position.x*noiseScale, noiseTime+200);
-          _flowFieldForce.set(nx, ny, nz).multiplyScalar(noiseStrength);
+          alphaAttr.setX(i, Math.pow(t, 2));
+          const nx = state.noise.noise3D(p.position.x * noiseScale, p.position.y * noiseScale, noiseTime);
+          const ny = state.noise.noise3D(p.position.y * noiseScale, p.position.x * noiseScale, noiseTime + 100);
+          _flowFieldForce.set(nx, ny, 0).multiplyScalar(noiseStrength);
           p.velocity.addScaledVector(_flowFieldForce, delta);
           p.position.addScaledVector(p.velocity, delta);
           p.velocity.multiplyScalar(1 - 1.5 * delta);
-          trailPosAttr.setXYZ(i, p.position.x, p.position.y, p.position.z);
-        } else { trailAlphaAttr.setX(i, 0); }
+          posAttr.setXYZ(i, p.position.x, p.position.y, p.position.z);
+        } else {
+          alphaAttr.setX(i, 0);
+        }
       }
-      trailPosAttr.needsUpdate = true;
-      trailAlphaAttr.needsUpdate = true;
-      
-      // --- Explosion Particle Physics & Updates ---
-      const explosionPosAttr = explosionParticleGeometry.getAttribute('position');
-      const explosionAlphaAttr = explosionParticleGeometry.getAttribute('alpha');
-      for (let i = 0; i < MAX_EXPLOSION_PARTICLES; i++) {
-          const p = state.explosionParticles[i];
-          if (p.life > 0) {
-              p.life -= delta;
-              const t = Math.max(0, p.life / p.maxLife);
-              explosionAlphaAttr.setX(i, Math.pow(t, 2));
-              p.velocity.multiplyScalar(1 - 0.5 * delta);
-              p.position.addScaledVector(p.velocity, delta);
-              explosionPosAttr.setXYZ(i, p.position.x, p.position.y, p.position.z);
-          } else { explosionAlphaAttr.setX(i, 0); }
-      }
-      explosionPosAttr.needsUpdate = true;
-      explosionAlphaAttr.needsUpdate = true;
+      posAttr.needsUpdate = true;
+      alphaAttr.needsUpdate = true;
 
       composer.render();
     };
@@ -649,9 +583,6 @@ const PaperPlaneApp = () => {
     return () => {
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mousedown', handleMouseDown);
-      window.removeEventListener('mouseup', handleMouseUp);
-      window.removeEventListener('keydown', handleKeyDown);
       if (mountNode) mountNode.removeChild(renderer.domElement);
       renderer.dispose();
       composer.dispose();
