@@ -2,43 +2,68 @@ body,
 html {
   margin: 0;
   padding: 0;
-  overflow: hidden;
-  background-color: #050510; /* Deeper space blue */
+  overflow: auto; /* Allow scrolling if content is long */
+  background-color: #0d1117;
+  color: #e6edf3;
   font-family: 'Inter', 'Arial', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  cursor: none; /* Hide the system cursor */
 }
 
 #root {
+  position: fixed; /* Position the canvas container on top */
+  top: 0;
+  left: 0;
   width: 100vw;
   height: 100vh;
+  pointer-events: none; /* Allow mouse events to pass through */
+  z-index: 10;
 }
 
 canvas {
   display: block;
-  cursor: none;
 }
 
-.instructions {
-  position: absolute;
-  top: 30px;
-  left: 50%;
-  transform: translateX(-50%);
-  color: #e0e0e0;
-  background-color: rgba(10, 10, 20, 0.7);
-  padding: 12px 24px;
-  border-radius: 30px;
-  font-size: 1rem;
-  font-weight: 500;
-  pointer-events: none;
+#content {
+  position: relative; /* Ensure it's in the normal document flow */
+  z-index: 1;
+  max-width: 800px;
+  margin: 15vh auto;
+  padding: 2rem 4rem;
+  background: rgba(30, 41, 59, 0.5);
+  border: 1px solid rgba(51, 65, 85, 0.7);
+  border-radius: 12px;
   text-align: center;
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-  backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  transition: opacity 0.75s ease-out;
-  opacity: 1;
+  backdrop-filter: blur(4px);
 }
 
-.instructions.fade-out {
-  opacity: 0;
+#content h1 {
+  font-size: 3rem;
+  color: #7dd3fc;
+  margin-bottom: 1rem;
+}
+
+#content p {
+  font-size: 1.1rem;
+  line-height: 1.7;
+  color: #cbd5e1;
+}
+
+#content button {
+  pointer-events: all; /* Make sure the button is interactive */
+  margin-top: 1rem;
+  padding: 12px 24px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  background-color: #334155;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  transition: background-color 0.2s, transform 0.2s;
+}
+
+#content button:hover {
+  background-color: #475569;
+  transform: translateY(-2px);
 }

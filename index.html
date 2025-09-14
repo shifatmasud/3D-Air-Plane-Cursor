@@ -1,12 +1,27 @@
 <script type="importmap">
-  {
-    "imports": {
-      "@google/genai": "https://esm.sh/@google/genai@^0.7.0",
-      "react": "https://esm.sh/react@^19.0.0",
-      "react/": "https://esm.sh/react@^19.0.0/",
-      "react-dom/": "https://esm.sh/react-dom@^19.0.0/",
-      "three": "https://esm.sh/three@^0.160.0"
-    }
+{
+  "imports": {
+    "@google/genai": "https://esm.sh/@google/genai@^0.7.0",
+    "react": "https://esm.sh/react@^19.0.0",
+    "react/": "https://esm.sh/react@^19.0.0/",
+    "react-dom/": "https://esm.sh/react-dom@^19.0.0/",
+    "three": "https://esm.sh/three@^0.160.0",
+    "three/addons/": "https://esm.sh/three@^0.160.0/examples/jsm/",
+    "three/": "https://aistudiocdn.com/three@^0.180.0/"
   }
+}
 </script>
 <div id="root"></div>
+<main id="content">
+  <h1>Transparent Overlay</h1>
+  <p>
+    This is standard HTML content being displayed underneath the Three.js
+    animation. The paper plane and its target reticle are rendered on a
+    transparent canvas that sits on top of the entire page.
+  </p>
+  <p>
+    The canvas layer has <code>pointer-events: none</code>, which allows you to interact
+    with the content below. You can select this text or click the button.
+  </p>
+  <button onclick="alert('Button clicked!')">Click Me!</button>
+</main>

@@ -2,32 +2,128 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
-import React, {useRef, useEffect, useState} from 'react';
+import React, {useRef, useEffect, useMemo} from 'react';
 import ReactDOM from 'react-dom/client';
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
-/**
- * Creates and manages the Three.js scene for the paper plane interaction.
- */
+
+// --- Simplex Noise for Fluid Motion ---
+const SimplexNoise = (() => {
+  const F2 = 0.5 * (Math.sqrt(3.0) - 1.0);
+  const G2 = (3.0 - Math.sqrt(3.0)) / 6.0;
+  const F3 = 1.0 / 3.0;
+  const G3 = 1.0 / 6.0;
+
+  const grad3 = new Float32Array([
+    1, 1, 0, -1, 1, 0, 1, -1, 0, -1, -1, 0, 1, 0, 1, -1, 0, 1, 1, 0, -1, -1,
+    0, -1, 0, 1, 1, 0, -1, 1, 0, 1, -1, 0, -1, -1,
+  ]);
+
+  const p = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) p[i] = i;
+
+  let n;
+  for (let i = 255; i > 0; i--) {
+    n = Math.floor((i + 1) * Math.random());
+    const q = p[i];
+    p[i] = p[n];
+    p[n] = q;
+  }
+  const perm = new Uint8Array(512);
+  const permMod12 = new Uint8Array(512);
+  for (let i = 0; i < 512; i++) {
+    perm[i] = p[i & 255];
+    permMod12[i] = perm[i] % 12;
+  }
+
+  return class SimplexNoise {
+    noise3D(xin, yin, zin) {
+      let n0, n1, n2, n3;
+      const s = (xin + yin + zin) * F3;
+      const i = Math.floor(xin + s);
+      const j = Math.floor(yin + s);
+      const k = Math.floor(zin + s);
+      const t = (i + j + k) * G3;
+      const X0 = i - t;
+      const Y0 = j - t;
+      const Z0 = k - t;
+      const x0 = xin - X0;
+      const y0 = yin - Y0;
+      const z0 = zin - Z0;
+
+      let i1, j1, k1;
+      let i2, j2, k2;
+      if (x0 >= y0) {
+        if (y0 >= z0) { i1=1; j1=0; k1=0; i2=1; j2=1; k2=0; }
+        else if (x0 >= z0) { i1=1; j1=0; k1=0; i2=1; j2=0; k2=1; }
+        else { i1=0; j1=0; k1=1; i2=1; j2=0; k2=1; }
+      } else {
+        if (y0 < z0) { i1=0; j1=0; k1=1; i2=0; j2=1; k2=1; }
+        else if (x0 < z0) { i1=0; j1=1; k1=0; i2=0; j2=1; k2=1; }
+        else { i1=0; j1=1; k1=0; i2=1; j2=1; k2=0; }
+      }
+
+      const x1 = x0 - i1 + G3, y1 = y0 - j1 + G3, z1 = z0 - k1 + G3;
+      const x2 = x0 - i2 + 2.0 * G3, y2 = y0 - j2 + 2.0 * G3, z2 = z0 - k2 + 2.0 * G3;
+      const x3 = x0 - 1.0 + 3.0 * G3, y3 = y0 - 1.0 + 3.0 * G3, z3 = z0 - 1.0 + 3.0 * G3;
+
+      const ii = i & 255, jj = j & 255, kk = k & 255;
+
+      const gi0 = permMod12[ii+perm[jj+perm[kk]]] * 3;
+      const gi1 = permMod12[ii+i1+perm[jj+j1+perm[kk+k1]]] * 3;
+      const gi2 = permMod12[ii+i2+perm[jj+j2+perm[kk+k2]]] * 3;
+      const gi3 = permMod12[ii+1+perm[jj+1+perm[kk+1]]] * 3;
+      
+      let t0 = 0.6 - x0*x0 - y0*y0 - z0*z0;
+      n0 = (t0 < 0) ? 0.0 : Math.pow(t0, 4) * (grad3[gi0] * x0 + grad3[gi0+1] * y0 + grad3[gi0+2] * z0);
+      let t1 = 0.6 - x1*x1 - y1*y1 - z1*z1;
+      n1 = (t1 < 0) ? 0.0 : Math.pow(t1, 4) * (grad3[gi1] * x1 + grad3[gi1+1] * y1 + grad3[gi1+2] * z1);
+      let t2 = 0.6 - x2*x2 - y2*y2 - z2*z2;
+      n2 = (t2 < 0) ? 0.0 : Math.pow(t2, 4) * (grad3[gi2] * x2 + grad3[gi2+1] * y2 + grad3[gi2+2] * z2);
+      let t3 = 0.6 - x3*x3 - y3*y3 - z3*z3;
+      n3 = (t3 < 0) ? 0.0 : Math.pow(t3, 4) * (grad3[gi3] * x3 + grad3[gi3+1] * y3 + grad3[gi3+2] * z3);
+
+      return 32.0 * (n0 + n1 + n2 + n3);
+    }
+  };
+})();
+
 const PaperPlaneApp = () => {
   const mountRef = useRef(null);
-  const [instructionsVisible, setInstructionsVisible] = useState(true);
+  const MAX_PARTICLES = 500;
+  
+  const { 
+    _vec3, _mat4, _lookAt, _flowFieldForce,
+    _bankQuat, _targetQuat, _tailOffset, _worldTailPosition,
+    _normalizedVelocity, _steeringForce, _desiredVelocity
+  } = useMemo(() => ({
+      _vec3: new THREE.Vector3(),
+      _mat4: new THREE.Matrix4(),
+      _lookAt: new THREE.Vector3(),
+      _flowFieldForce: new THREE.Vector3(),
+      _bankQuat: new THREE.Quaternion(),
+      _targetQuat: new THREE.Quaternion(),
+      _tailOffset: new THREE.Vector3(0, 0, 15),
+      _worldTailPosition: new THREE.Vector3(),
+      _normalizedVelocity: new THREE.Vector3(),
+      _steeringForce: new THREE.Vector3(),
+      _desiredVelocity: new THREE.Vector3(),
+  }), []);
 
-  // Using a ref for state that changes in the animation loop prevents re-renders
   const state = useRef({
-    isDragging: false,
-    isFlying: false,
-    isPathFading: false,
-    pathFadeProgress: 1,
-    dragStartTime: 0,
-    mousePosition: new THREE.Vector3(),
-    pathPoints: [],
-    flightPathCurve: null,
-    rawFlightProgress: 0,
-    flightSpeed: 0,
-    // Trail state
+    mouseTarget: new THREE.Vector3(),
+    plane: {
+        position: new THREE.Vector3(),
+        velocity: new THREE.Vector3(),
+        acceleration: new THREE.Vector3(),
+    },
     trailParticles: [],
-    lastTrailEmitTime: 0,
+    noise: new SimplexNoise(),
+    lastEmitTime: 0,
+    hasMoved: false,
   }).current;
 
   useEffect(() => {
@@ -44,261 +140,278 @@ const PaperPlaneApp = () => {
     camera.position.z = 1000;
 
     const renderer = new THREE.WebGLRenderer({antialias: true, alpha: true});
+    renderer.setClearColor(0x000000, 0);
     renderer.setSize(window.innerWidth, window.innerHeight);
     mountNode.appendChild(renderer.domElement);
 
-    // --- Lighting (Simplified) ---
-    scene.add(new THREE.HemisphereLight(0xadd8e6, 0x444488, 1.5));
+    // --- Post-processing (Bloom) ---
+    const renderScene = new RenderPass(scene, camera);
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.0, 0.4, 0.85);
+    const composer = new EffectComposer(renderer);
+    composer.addPass(renderScene);
+    composer.addPass(bloomPass);
 
-    // --- Paper Plane Model with Depth ---
+    // --- Lighting ---
+    scene.add(new THREE.AmbientLight(0xffffff, 0.2));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    dirLight.position.set(500, 500, 1000);
+    scene.add(dirLight);
+    
+    // --- Cursor Target Reticle ---
+    const cursorGeometry = new THREE.TorusGeometry(15, 0.5, 8, 32);
+    const cursorMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.5 });
+    const cursorTarget = new THREE.Mesh(cursorGeometry, cursorMaterial);
+    scene.add(cursorTarget);
+
+    // --- Paper Plane Model with Fresnel Shader ---
     const planeGeometry = new THREE.BufferGeometry();
-    const vertices = new Float32Array([
-       0,  2, -15, -20, -1,  10,  20, -1,  10,
-       0,  2,  15,   0, -2,  15,   0, -2, -10,
-    ]);
-    const indices = [0, 1, 2, 1, 3, 2, 0, 5, 1, 1, 5, 4, 1, 4, 3, 0, 2, 5, 2, 4, 5, 2, 3, 4];
+    const vertices = new Float32Array([0,2,-15, -20,-1,10, 20,-1,10, 0,2,15, 0,-2,15, 0,-2,-10]);
+    const indices = [0,1,2, 1,3,2, 0,5,1, 1,5,4, 1,4,3, 0,2,5, 2,4,5, 2,3,4];
     planeGeometry.setIndex(indices);
     planeGeometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
     planeGeometry.computeVertexNormals();
-    const material = new THREE.MeshPhongMaterial({color: 0xffffff, shininess: 100, side: THREE.DoubleSide});
-    const plane = new THREE.Mesh(planeGeometry, material);
-    plane.scale.set(1.5, 1.5, 1.5);
-    scene.add(plane);
-
-    // --- Flight Path Line ---
-    const lineMaterial = new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 2, transparent: true });
-    const lineGeometry = new THREE.BufferGeometry();
-    const flightPathLine = new THREE.Line(lineGeometry, lineMaterial);
-    scene.add(flightPathLine);
-    const startColor = new THREE.Color(0xff4500);
-    const endColor = new THREE.Color(0x00ffff);
-
-    // --- Particle Trail System ---
-    const MAX_PARTICLES = 300;
-    const trailGeometry = new THREE.BufferGeometry();
-    const positions = new Float32Array(MAX_PARTICLES * 3);
-    const colors = new Float32Array(MAX_PARTICLES * 3);
-    trailGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    trailGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-    const trailMaterial = new THREE.PointsMaterial({
-        size: 5,
-        vertexColors: true,
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
+    
+    const planeMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        time: { value: 1.0 },
+        glowColor: { value: new THREE.Color(0x00ffff) }
+      },
+      vertexShader: `
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        void main() {
+          vNormal = normalize(normalMatrix * normal);
+          vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float time;
+        uniform vec3 glowColor;
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        void main() {
+          float intensity = pow(0.7 - dot(vNormal, normalize(-vPosition)), 2.0);
+          intensity += (sin(time * 2.0) * 0.5 + 0.5) * 0.1; // Pulsing
+          vec3 baseColor = vec3(0.9, 0.9, 0.9);
+          gl_FragColor = vec4(baseColor + glowColor * intensity, 1.0);
+        }
+      `,
+      side: THREE.DoubleSide
     });
-    const particleSystem = new THREE.Points(trailGeometry, trailMaterial);
+    
+    const planeMesh = new THREE.Mesh(planeGeometry, planeMaterial);
+    const planeGroup = new THREE.Group();
+    planeGroup.add(planeMesh);
+    planeGroup.scale.set(1.8, 1.8, 1.8);
+    scene.add(planeGroup);
+
+    // --- Particle Trail System with Custom Shader ---
+    const particleGeometry = new THREE.BufferGeometry();
+    const particlePositions = new Float32Array(MAX_PARTICLES * 3);
+    const particleAlphas = new Float32Array(MAX_PARTICLES);
+    particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3).setUsage(THREE.DynamicDrawUsage));
+    particleGeometry.setAttribute('alpha', new THREE.BufferAttribute(particleAlphas, 1).setUsage(THREE.DynamicDrawUsage));
+    
+    const particleMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        color: { value: new THREE.Color(0x00aaff) },
+      },
+      vertexShader: `
+        attribute float alpha;
+        varying float vAlpha;
+        void main() {
+          vAlpha = alpha;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = (10.0 * alpha) + 2.0;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 color;
+        varying float vAlpha;
+        void main() {
+          float r = distance(gl_PointCoord, vec2(0.5, 0.5));
+          if (r > 0.5) { discard; }
+          gl_FragColor = vec4(color, vAlpha * (1.0 - r * 2.0));
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+
+    const particleSystem = new THREE.Points(particleGeometry, particleMaterial);
     scene.add(particleSystem);
 
     for (let i = 0; i < MAX_PARTICLES; i++) {
         state.trailParticles.push({
-            position: new THREE.Vector3(),
-            life: 0,
-            maxLife: Math.random() * 60 + 30, // Frames
+            position: new THREE.Vector3(), velocity: new THREE.Vector3(),
+            life: 0, maxLife: Math.random() * 2.0 + 1.5,
         });
     }
     let particleIndex = 0;
-
-
-    // --- Event Handlers ---
-    const hideInstructions = () => {
-        if (instructionsVisible) setInstructionsVisible(false);
-    }
-    const instructionTimeout = setTimeout(hideInstructions, 4000);
     
+    // --- Event Handlers ---
     const handleResize = () => {
-      camera.left = -window.innerWidth / 2;
-      camera.right = window.innerWidth / 2;
-      camera.top = window.innerHeight / 2;
-      camera.bottom = -window.innerHeight / 2;
+      camera.left = -window.innerWidth / 2; camera.right = window.innerWidth / 2;
+      camera.top = window.innerHeight / 2; camera.bottom = -window.innerHeight / 2;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
+      composer.setSize(window.innerWidth, window.innerHeight);
     };
 
-    const updateMousePosition = (e) => {
-      state.mousePosition.x = e.clientX - window.innerWidth / 2;
-      state.mousePosition.y = -(e.clientY - window.innerHeight / 2);
-    };
-
-    const handleInteractionStart = (e) => {
-        hideInstructions();
-        updateMousePosition(e);
-        if (state.isFlying) return;
-        state.isDragging = true;
-        state.pathPoints = [state.mousePosition.clone()];
-        state.dragStartTime = Date.now();
-        
-        // Reset path line visuals
-        state.isPathFading = false;
-        lineMaterial.opacity = 1;
-        flightPathLine.visible = true;
-        flightPathLine.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(), 3));
-    }
-    
-    const handleInteractionMove = (e) => {
-        updateMousePosition(e);
-        if (state.isDragging) {
-            state.pathPoints.push(state.mousePosition.clone());
-            const positions = new Float32Array(state.pathPoints.length * 3);
-            state.pathPoints.forEach((p, i) => p.toArray(positions, i * 3));
-            flightPathLine.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-            
-            const colorAttribute = flightPathLine.geometry.getAttribute('color');
-            if (!colorAttribute || colorAttribute.count !== state.pathPoints.length) {
-                flightPathLine.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(state.pathPoints.length * 3), 3));
-            }
-        }
-    };
-    
-    const handleInteractionEnd = () => {
-        if (!state.isDragging || state.pathPoints.length < 5) {
-            state.isDragging = false;
-            state.pathPoints = [];
-            flightPathLine.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(), 3));
-            return;
-        }
-        state.isDragging = false;
-        state.isFlying = true;
-        state.flightPathCurve = new THREE.CatmullRomCurve3(state.pathPoints, false, 'catmullrom', 0.3);
-        state.rawFlightProgress = 0;
-        const dragDuration = (Date.now() - state.dragStartTime) / 1000;
-        const dragDistance = state.pathPoints[0].distanceTo(state.pathPoints[state.pathPoints.length - 1]);
-        state.flightSpeed = Math.max(0.005, Math.min(0.02, (dragDistance / 200) / (dragDuration * 50)));
-        flightPathLine.visible = false;
+    const handleMouseMove = (e) => {
+      if (!state.hasMoved) state.hasMoved = true;
+      state.mouseTarget.x = e.clientX - window.innerWidth / 2;
+      state.mouseTarget.y = -(e.clientY - window.innerHeight / 2);
     };
     
     window.addEventListener('resize', handleResize);
-    window.addEventListener('mousemove', handleInteractionMove);
-    window.addEventListener('mousedown', handleInteractionStart);
-    window.addEventListener('mouseup', handleInteractionEnd);
+    window.addEventListener('mousemove', handleMouseMove);
+
+    // --- Realistic Flight Parameters ---
+    const flightParams = {
+        bankFactor: 0.001,
+        maxBank: Math.PI / 4,
+        maxSpeed: 800,
+        maxForce: 25, // Steering force
+        damping: 0.98, // Fluid resistance
+        slowingRadius: 300, // Distance at which to start slowing down
+    };
     
     const clock = new THREE.Clock();
     const animate = () => {
       requestAnimationFrame(animate);
+      const delta = Math.min(clock.getDelta(), 0.1);
       const elapsedTime = clock.getElapsedTime();
-      const delta = clock.getDelta();
+      if (delta === 0) return;
 
-      // Path line glow effect
-      if (state.isDragging && state.pathPoints.length > 1) {
-          const colorAttribute = flightPathLine.geometry.getAttribute('color');
-          if (colorAttribute) {
-              const colors = colorAttribute.array;
-              const hueShift = (Math.sin(elapsedTime * 2) + 1) / 2 * 0.1;
-              for (let i = 0; i < state.pathPoints.length; i++) {
-                  const t = i / (state.pathPoints.length - 1);
-                  const baseColor = new THREE.Color().copy(startColor).lerp(endColor, t);
-                  const hsl = { h: 0, s: 0, l: 0 };
-                  baseColor.getHSL(hsl);
-                  const lightnessPulse = 0.85 + Math.sin(elapsedTime * 8 - i * 0.5) * 0.15;
-                  baseColor.setHSL((hsl.h + hueShift) % 1.0, hsl.s, hsl.l * lightnessPulse);
-                  baseColor.toArray(colors, i * 3);
-              }
-              colorAttribute.needsUpdate = true;
-          }
+      const { plane } = state;
+      
+      // --- Physics: Steering Behavior (Arrival) ---
+      // 1. Calculate desired velocity vector pointing from plane to target
+      _desiredVelocity.subVectors(state.mouseTarget, plane.position);
+      const distance = _desiredVelocity.length();
+
+      // 2. Scale speed based on distance to target (the "arrival" logic)
+      let desiredSpeed = flightParams.maxSpeed;
+      if (distance < flightParams.slowingRadius) {
+          // As we get closer, the desired speed decreases
+          desiredSpeed = flightParams.maxSpeed * (distance / flightParams.slowingRadius);
+      }
+      
+      // 3. Scale desired velocity to the calculated speed for this frame
+      _desiredVelocity.normalize().multiplyScalar(desiredSpeed * delta);
+
+      // 4. Calculate steering force: desired - current velocity
+      _steeringForce.subVectors(_desiredVelocity, plane.velocity);
+
+      // 5. Limit the steering force to a maximum value
+      _steeringForce.clampLength(0, flightParams.maxForce * delta);
+      
+      // 6. Apply the force to acceleration (assuming mass = 1)
+      plane.acceleration.add(_steeringForce);
+
+      // 7. Update velocity with acceleration
+      plane.velocity.add(plane.acceleration);
+      // 8. Apply damping to simulate fluid resistance
+      plane.velocity.multiplyScalar(flightParams.damping);
+      // 9. Update position with velocity
+      plane.position.add(plane.velocity);
+      // 10. Reset acceleration for the next frame
+      plane.acceleration.multiplyScalar(0);
+
+      // --- Update Meshes ---
+      planeGroup.position.copy(plane.position);
+      cursorTarget.position.copy(state.mouseTarget);
+      
+      // Update rotation to face velocity and bank into turns
+      if (plane.velocity.lengthSq() > 0.01) {
+          // a. Base orientation: Look where you're going
+          _lookAt.addVectors(plane.position, plane.velocity);
+          _mat4.lookAt(plane.position, _lookAt, planeGroup.up);
+          _targetQuat.setFromRotationMatrix(_mat4);
+
+          // b. Banking calculation based on lateral steering force
+          const sideVector = _flowFieldForce.copy(plane.velocity).normalize().cross(planeGroup.up);
+          const lateralForce = _steeringForce.dot(sideVector);
+          const targetBankAngle = THREE.MathUtils.clamp(
+              -lateralForce * flightParams.bankFactor, 
+              -flightParams.maxBank, 
+              flightParams.maxBank
+          );
+          
+          // c. Create a quaternion for the bank and combine it
+          _normalizedVelocity.copy(plane.velocity).normalize();
+          _bankQuat.setFromAxisAngle(_normalizedVelocity, targetBankAngle);
+          _targetQuat.multiply(_bankQuat);
+          
+          // d. Smoothly rotate towards the target orientation
+          const turnSpeed = 1 - Math.pow(0.01, delta);
+          planeGroup.quaternion.slerp(_targetQuat, turnSpeed);
       }
 
-      // Plane flight logic
-      if (state.isFlying) {
-        state.rawFlightProgress += state.flightSpeed;
-        const flightProgress = 1 - Math.pow(1 - state.rawFlightProgress, 4);
-
-        if (state.rawFlightProgress >= 1) {
-          state.isFlying = false;
-          state.isPathFading = true; // Start fading the path
-          state.pathFadeProgress = 1.0;
-        } else {
-          const newPos = state.flightPathCurve.getPointAt(flightProgress);
-          const tangent = state.flightPathCurve.getTangentAt(flightProgress).normalize();
-          const worldUp = new THREE.Vector3(0, 1, 0);
-          const sideVector = new THREE.Vector3().crossVectors(tangent, worldUp).normalize();
-          const bankAmount = Math.max(-0.8, Math.min(0.8, tangent.x * -1.5));
-          const upVector = new THREE.Vector3().copy(worldUp).add(sideVector.multiplyScalar(bankAmount)).normalize();
-          const lookAtPos = newPos.clone().add(tangent);
-          const targetMatrix = new THREE.Matrix4().lookAt(newPos, lookAtPos, upVector);
-          const targetQuaternion = new THREE.Quaternion().setFromRotationMatrix(targetMatrix);
-          plane.quaternion.slerp(targetQuaternion, 0.1);
-          plane.position.copy(newPos);
-          
-          // Emit trail particle
+      // --- Particle Emission ---
+      const speed = plane.velocity.length() / delta; // Get speed in units/sec
+      const emitInterval = 1 / (Math.min(speed / 20, 50) + 10);
+      
+      if (state.hasMoved && speed > 10 && elapsedTime - state.lastEmitTime > emitInterval) {
+          state.lastEmitTime = elapsedTime;
           const p = state.trailParticles[particleIndex];
-          p.position.copy(plane.position);
+          
+          _worldTailPosition.copy(_tailOffset).applyMatrix4(planeGroup.matrixWorld);
+          p.position.copy(_worldTailPosition);
+
+          p.velocity.copy(plane.velocity).multiplyScalar(-0.1 / delta); // Adjust for delta
           p.life = p.maxLife;
           particleIndex = (particleIndex + 1) % MAX_PARTICLES;
-        }
-      } else {
-        // Hover and follow logic
-        const targetPosition = state.mousePosition.clone();
-        const velocity = targetPosition.sub(plane.position).multiplyScalar(0.05);
-        plane.position.add(velocity);
-
-        if (velocity.length() > 0.1) {
-            const lookAtPos = plane.position.clone().add(velocity);
-            const targetQuaternion = new THREE.Quaternion().setFromRotationMatrix(
-                new THREE.Matrix4().lookAt(plane.position, lookAtPos, plane.up)
-            );
-            plane.quaternion.slerp(targetQuaternion, 0.1);
-        }
       }
-
-      // Path fade-out logic
-      if(state.isPathFading) {
-          state.pathFadeProgress -= delta * 0.75; // Fade over ~1.3 seconds
-          if(state.pathFadeProgress <= 0) {
-              state.isPathFading = false;
-              flightPathLine.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(), 3));
-          } else {
-              lineMaterial.opacity = state.pathFadeProgress;
-          }
-      }
-
-      // Update particle trail
-      const posAttr = trailGeometry.getAttribute('position');
-      const colAttr = trailGeometry.getAttribute('color');
+      
+      // --- Particle Physics & Updates ---
+      const posAttr = particleGeometry.getAttribute('position');
+      const alphaAttr = particleGeometry.getAttribute('alpha');
+      const noiseScale = 0.02, noiseTime = elapsedTime * 0.8, noiseStrength = 350;
+      
       for (let i = 0; i < MAX_PARTICLES; i++) {
         const p = state.trailParticles[i];
         if (p.life > 0) {
-          p.life -= 1;
-          const t = p.life / p.maxLife; // 1 -> 0
-          const scale = t * t; // Ease in
-          const alpha = Math.sin(t * Math.PI); // Fade in and out
+          p.life -= delta;
+          const t = Math.max(0, p.life / p.maxLife);
+          alphaAttr.setX(i, Math.pow(t, 2));
+
+          const nx = state.noise.noise3D(p.position.x * noiseScale, p.position.y * noiseScale, noiseTime);
+          const ny = state.noise.noise3D(p.position.y * noiseScale, p.position.x * noiseScale, noiseTime + 100);
+          _flowFieldForce.set(nx, ny, 0).multiplyScalar(noiseStrength);
           
+          p.velocity.addScaledVector(_flowFieldForce, delta);
+          p.position.addScaledVector(p.velocity, delta);
+          p.velocity.multiplyScalar(1 - 1.5 * delta);
+
           posAttr.setXYZ(i, p.position.x, p.position.y, p.position.z);
-          // Trail color fades from cyan to a darker blue
-          colAttr.setXYZ(i, 0.5 * scale, 0.8 * scale, 1.0 * alpha);
         } else {
-          posAttr.setXYZ(i, 0, 0, -2000); // Hide dead particles
+          alphaAttr.setX(i, 0);
         }
       }
       posAttr.needsUpdate = true;
-      colAttr.needsUpdate = true;
-      trailGeometry.computeBoundingSphere();
+      alphaAttr.needsUpdate = true;
 
+      planeMaterial.uniforms.time.value = elapsedTime;
 
-      renderer.render(scene, camera);
+      composer.render();
     };
 
     animate();
 
     return () => {
-      clearTimeout(instructionTimeout);
       window.removeEventListener('resize', handleResize);
-      window.removeEventListener('mousemove', handleInteractionMove);
-      window.removeEventListener('mousedown', handleInteractionStart);
-      window.removeEventListener('mouseup', handleInteractionEnd);
+      window.removeEventListener('mousemove', handleMouseMove);
       if (mountNode) mountNode.removeChild(renderer.domElement);
       renderer.dispose();
+      composer.dispose();
     };
-  }, [instructionsVisible]);
+  }, []);
 
-  return (
-    <>
-        <div ref={mountRef} />
-        <div className={`instructions ${instructionsVisible ? '' : 'fade-out'}`} aria-hidden={!instructionsVisible}>
-            Move cursor to guide the plane. Click, drag, and release to launch!
-        </div>
-    </>
-  );
+  return <div ref={mountRef} />;
 };
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
