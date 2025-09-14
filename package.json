@@ -12,7 +12,8 @@
     "@google/genai": "^0.7.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "three": "^0.180.0"
+    "three": "^0.180.0",
+    "framer": "^2.4.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
